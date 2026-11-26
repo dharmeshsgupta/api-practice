@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydandic[email]
+python-jose[cryptography]
+passlib[bcypt]
+python-multipart
+bcrypt<4.1

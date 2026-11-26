@@ -1,0 +1,8 @@
+langchain
+python-dotenv
+unstructured
+markdown
+langchain-openai
+langchain-community
+langchain-core
+faiss-cpu

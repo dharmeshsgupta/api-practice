@@ -1,0 +1,952 @@
+FASTAPI JWT CRUD APPLICATION
+INTERVIEW CODE EXPLANATION
+
+This application provides:
+- User registration
+- User login using OAuth2 form data
+- JWT-based authentication
+- Bcrypt password hashing
+- SQLite database access through SQLAlchemy
+- Authenticated CRUD operations for items
+
+The general request flow is:
+
+Client request
+    -> FastAPI route
+    -> Pydantic validation
+    -> Dependency injection
+    -> JWT authentication
+    -> SQLAlchemy database operation
+    -> Pydantic response serialization
+
+
+============================================================
+1. app/main.py
+============================================================
+
+from fastapi import FastAPI
+
+Imports FastAPI, the main class used to create the web application.
+
+from app.database import engine, Base
+
+Imports the SQLAlchemy database engine and declarative base. Base is not
+used directly in this file, but importing the database module initializes
+the database objects.
+
+from . import models
+
+Imports the models module. This is important because SQLAlchemy must know
+about the User and Item models before the tables are created.
+
+from app.auth import router as auth_router
+from app.crud import router as items_router
+
+Imports routers from the authentication and CRUD modules. The aliases make
+the purpose of each router clear.
+
+models.Base.metadata.create_all(bind=engine)
+
+Creates database tables that do not already exist.
+
+- models.Base is the SQLAlchemy declarative base.
+- metadata contains the table definitions.
+- create_all creates missing tables.
+- bind=engine tells SQLAlchemy which database to use.
+
+For production applications, Alembic migrations are normally preferred over
+create_all because migrations can safely track schema changes.
+
+app = FastAPI(
+    title="FastAPI JWT Authrntication and CRUD Application",
+)
+
+Creates the FastAPI application object. The title appears in the automatically
+generated Swagger documentation.
+
+Authrntication is misspelled here. It should be Authentication.
+
+app.include_router(auth_router)
+app.include_router(items_router)
+
+Registers the authentication and item routers with the main application.
+
+@app.get("/")
+
+Registers a GET endpoint at the root URL.
+
+
+def home():
+
+Defines the function called when a client sends GET /.
+
+    return {
+        "message": "Welcome to the FastAPI JWT Authentication and CRUD Application!"
+    }
+
+Returns a Python dictionary. FastAPI converts it to a JSON response.
+
+
+============================================================
+2. app/database.py
+============================================================
+
+from sqlalchemy import create_engine
+
+Imports SQLAlchemy's function for creating a database engine.
+
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+Imports:
+- sessionmaker: creates database sessions.
+- declarative_base: creates the parent class for ORM models.
+
+DATABASE_URL = "sqlite:///./app.db"
+
+Defines the SQLite connection URL. The database is stored in app.db in the
+current working directory.
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+Creates the SQLAlchemy engine.
+
+SQLite normally restricts a database connection to one thread. FastAPI can
+handle requests using different threads, so check_same_thread=False is used
+for this setup.
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+)
+
+Creates a factory for database sessions.
+
+- bind=engine connects sessions to the database.
+- autocommit=False means changes require an explicit commit.
+- autoflush=False prevents SQLAlchemy from automatically flushing pending
+  changes before every query.
+
+Base = declarative_base()
+
+Creates the base class inherited by the User and Item ORM models.
+
+
+def get_db():
+
+Defines a FastAPI dependency that supplies a database session to endpoints.
+
+    db = SessionLocal()
+
+Creates a new database session.
+
+    try:
+        yield db
+
+Provides the session to the route function. Because this function uses yield,
+FastAPI runs the remaining cleanup code after the request is complete.
+
+    finally:
+        db.close()
+
+Always closes the session, even if an exception occurs. This prevents database
+connections from remaining open.
+
+
+============================================================
+3. app/models.py
+============================================================
+
+from sqlalchemy import Column, Integer, String, Boolean
+
+Imports SQLAlchemy column definitions and database types.
+
+from app.database import Base
+
+Imports the declarative base used to define ORM models.
+
+class User(Base):
+
+Defines a SQLAlchemy ORM class representing a user database record.
+
+    __tablename__ = "users"
+
+Maps the class to the users table.
+
+    id = Column(Integer, primary_key=True, index=True)
+
+Creates an integer primary key. primary_key=True uniquely identifies each
+user. index=True creates an index to improve lookup speed.
+
+    username = Column(String, unique=True, index=True)
+
+Stores the username. unique=True prevents duplicate usernames, and index=True
+makes username searches faster.
+
+    email = Column(String, unique=True, index=True)
+
+Stores the email address. It must be unique and is indexed for faster lookup.
+
+    hashed_password = Column(String)
+
+Stores the hashed password, never the original plain-text password.
+
+    is_active = Column(Boolean, default=True)
+
+Stores whether the account is active. New users are active by default.
+
+class Item(Base):
+
+Defines a SQLAlchemy ORM class representing an item.
+
+    __tablename__ = "items"
+
+Maps the class to the items table.
+
+    id = Column(Integer, primary_key=True, index=True)
+
+Defines the item primary key.
+
+    title = Column(String, index=True, nullable=False)
+
+Stores the item title. The title is required in the database because
+nullable=False is set.
+
+    description = Column(String, index=True, nullable=False)
+
+Stores the item description. There is currently a mismatch because the
+Pydantic schemas allow description to be None, while the database does not.
+
+    owner_id = Column(Integer, nullable=False)
+
+Stores the ID of the user who owns the item.
+
+For stronger database integrity, this should normally be a foreign key:
+
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+The current code does not enforce that the owner exists at the database level.
+
+
+============================================================
+4. app/schemas.py
+============================================================
+
+from pydantic import BaseModel, EmailStr, Field
+
+Imports Pydantic's base schema class, email validator, and field validator.
+Pydantic validates incoming request data and outgoing response data.
+
+class UserCreate(BaseModel):
+
+Defines the request body accepted during registration.
+
+    username: str = Field(..., min_length=3, max_length=50)
+
+Requires a username between 3 and 50 characters. The ... means the field is
+required.
+
+    email: EmailStr
+
+Requires a syntactically valid email address.
+
+    password: str
+
+Requires a password string. A password length rule should be added in a real
+application.
+
+class UserOut(BaseModel):
+
+Defines the user data returned to clients.
+
+    id: int
+    username: str
+    email: EmailStr
+    is_active: bool
+
+These fields are returned. The password hash is intentionally excluded from
+the response.
+
+    class Config:
+        from_attributes = True
+
+Allows Pydantic to build this schema from a SQLAlchemy ORM object instead of
+requiring a dictionary.
+
+class Token(BaseModel):
+
+Defines the response returned after successful login.
+
+    access_token: str
+
+Contains the signed JWT string.
+
+    token_type: str = "bearer"
+
+Defines the token type expected by OAuth2 clients and Swagger UI.
+
+class ItemCreate(BaseModel):
+
+Defines the request body for creating an item.
+
+    title: str
+    description: str | None = None
+
+Requires a title and makes the description optional. This conflicts with the
+Item database model, where description is nullable=False.
+
+class ItemBase(BaseModel):
+
+Defines fields common to item schemas.
+
+    title: str
+    description: str | None = None
+
+These fields duplicate the fields in ItemCreate. A project could use this base
+class to reduce duplication.
+
+class ItemResponse(ItemBase):
+
+Extends ItemBase for item responses.
+
+    id: int
+    owner_id: int
+
+Adds database-generated fields.
+
+    class Config:
+        from_attributes = True
+
+Allows conversion from a SQLAlchemy Item object into this response schema.
+
+class ItemOut(BaseModel):
+
+Defines another item response schema.
+
+    id: int
+    title: str
+    description: str | None = None
+    owner_id: int
+
+Defines the fields returned to the client. This class overlaps with
+ItemResponse, so one response schema could be used consistently.
+
+    class Config:
+        from_attributes = True
+
+Enables ORM object serialization.
+
+class ItemUpdate(BaseModel):
+
+Defines the request body for updating an item.
+
+    title: str | None = None
+    description: str | None = None
+
+Both fields are optional, so clients can perform partial updates. For example,
+a client can update only the title.
+
+
+============================================================
+5. app/security.py
+============================================================
+
+from datetime import datetime, timedelta, timezone
+
+Imports date and time utilities for JWT expiration.
+
+from fastapi import Depends, HTTPException, status
+
+Imports dependency injection, HTTP exceptions, and status constants.
+
+from fastapi.security import OAuth2PasswordBearer
+
+Imports FastAPI's OAuth2 bearer-token helper.
+
+from jose import JWTError, jwt
+
+Imports JWT encoding, decoding, and JWT-related exceptions.
+
+from passlib.context import CryptContext
+
+Imports Passlib's password hashing configuration.
+
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app import models
+
+Imports the database session type, database dependency, and User model.
+
+SECRET_KEY = "your_secret_key_here"
+
+Defines the key used to sign JWTs. This should come from an environment
+variable or secrets manager in production. It should never be committed as a
+real secret.
+
+ALGORITHM = "HS2660"
+
+Defines the JWT signing algorithm. This value is incorrect. The usual value is
+HS256. HS2660 is not a standard algorithm and will cause token creation or
+validation to fail.
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+Sets the token lifetime to 30 minutes.
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+Configures Passlib to use bcrypt for password hashing.
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+Tells FastAPI to read a bearer token from the Authorization header. The
+expected header is:
+
+    Authorization: Bearer <jwt-token>
+
+The tokenUrl is also used by Swagger UI.
+
+
+def hash_password(password: str) -> str:
+
+Defines a function that receives a plain-text password and returns a hash.
+
+    return pwd_context.hash(password)
+
+Hashes the password using bcrypt. Bcrypt automatically generates a salt, so
+the same password can produce different hashes.
+
+
+def verify_password(plain_password: str, hashed_password: str) -> str:
+
+Receives a submitted plain-text password and a stored hash. The return type
+should technically be bool rather than str.
+
+    return pwd_context.verify(plain_password, hashed_password)
+
+Returns True when the password matches the hash, otherwise False.
+
+
+def create_access_token(data: dict) -> str:
+
+Creates a signed JWT from a dictionary.
+
+    to_encode = data.copy()
+
+Copies the input dictionary so the original object is not modified.
+
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+Calculates the expiration time in UTC.
+
+    to_encode.update({"exp": expire})
+
+Adds the standard JWT expiration claim.
+
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+Signs and returns the JWT. This currently depends on correcting the invalid
+HS2660 algorithm value.
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> models.User:
+
+Defines a reusable authentication dependency. FastAPI extracts the bearer
+token and opens a database session automatically.
+
+    credentials_error = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Couldn't validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+Creates the standard unauthorized response. The WWW-Authenticate header tells
+the client that bearer authentication is required.
+
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+Verifies the JWT signature and decodes its contents.
+
+        username: str = payload.get("sub")
+
+Reads the sub claim. In this application, sub contains the username.
+
+        if username is None:
+            raise credentials_error
+
+Rejects a token that does not contain a username.
+
+    except JWTError:
+        raise credentials_error
+
+Rejects invalid, expired, or malformed JWTs.
+
+    user = db.query(models.User).filter(
+        models.User.username == username
+    ).first()
+
+Looks up the user represented by the token.
+
+    if user is None:
+        raise credentials_error
+
+Rejects a validly signed token if the user no longer exists.
+
+    return user
+
+Returns the authenticated SQLAlchemy User object to protected endpoints.
+
+
+============================================================
+6. app/auth.py
+============================================================
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+Imports routing, dependency injection, HTTP exceptions, and status codes.
+
+from fastapi.security import OAuth2PasswordRequestForm
+
+Parses OAuth2 login form data. The client sends username and password as form
+fields rather than JSON.
+
+from sqlalchemy.orm import Session
+from app import models, security, schemas
+from app.database import get_db
+
+Imports the database session type, models, security functions, schemas, and
+database dependency.
+
+from app.security import get_current_user
+
+This import is unused in this file.
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"]
+)
+
+Creates an authentication router. Every route in this router starts with
+/auth, and Swagger groups them under Authentication.
+
+@router.post("/register", response_model=schemas.UserOut, status_code=201)
+
+Registers POST /auth/register. The successful response must match UserOut and
+has HTTP status 201.
+
+
+def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
+
+The request body is validated using UserCreate. FastAPI injects a database
+session using get_db.
+
+    existing_user = db.query(models.User).filter(
+        (models.User.username == user.username) |
+        (models.User.email == user.email)
+    ).first()
+
+Checks whether the username or email already exists. The | operator creates a
+SQL OR condition.
+
+    if existing_user:
+
+Checks whether a matching user was found.
+
+        raise HTTPExeption(...)
+
+HTTPExeption is misspelled. It must be HTTPException. As written, duplicate
+registration causes a NameError.
+
+    new_user = models.User(
+        username=user.username,
+        email=user.email,
+        hashed_password=security.hash_password(user.password)
+    )
+
+Creates a new User ORM object and hashes the password before storing it.
+
+    db.add(new_user)
+
+Adds the object to the current SQLAlchemy session.
+
+    db.commit()
+
+Persists the user to the database.
+
+    db.refresh(new_user)
+
+Reloads the object from the database, including generated fields such as id.
+
+The function must return new_user because response_model=schemas.UserOut is
+specified. Without a return statement, response validation fails.
+
+@router.post("/login", response_model=schemas.Token)
+
+Registers POST /auth/login and specifies that the response must match Token.
+
+
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+
+Reads username and password from OAuth2 form data and injects a database
+session.
+
+    user = db.query(models.User).filter(
+        models.User.username == form.username
+    ).first()
+
+There is a variable typo. The parameter is form_data, but the code uses form.
+It must use form_data.username. As written, login raises NameError.
+
+    if not user:
+        raise HTTPException(
+            ststus_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password"
+        )
+
+Checks whether the username exists and returns an unauthorized response if it
+does not. ststus_code is misspelled and must be status_code.
+
+    if not security.verify_password(form.password, user.hashed_password):
+
+Compares the submitted password with the stored bcrypt hash. form.password
+must also be changed to form_data.password.
+
+    access_token = security.create_access_token(
+        data={"sub": user.username}
+    )
+
+Creates a JWT with the username stored in the sub claim.
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+Returns the token in the format expected by OAuth2 clients and Swagger UI.
+
+
+============================================================
+7. app/crud.py
+============================================================
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+Imports routing, dependency injection, exceptions, and status codes.
+
+from fastapi.security import OAuth2PasswordRequestForm
+
+This import is unused in this file.
+
+from sqlalchemy.orm import Session
+from app import models, security
+
+Imports the SQLAlchemy session type and application models. security is
+currently unused here.
+
+from app.database import get_db
+from app.security import get_current_user
+from app import schemas
+
+Imports the database dependency, authentication dependency, and Pydantic
+schemas.
+
+router = APIRouter(
+    prefix="/items",
+    tags=["Items"]
+)
+
+Creates an item router. Its endpoints begin with /items and are grouped under
+Items in Swagger.
+
+@router.post("/", response_model=schemas.ItemResponse, status_code=201)
+
+Registers POST /items/. It returns an ItemResponse and HTTP 201 on success.
+
+
+def create_item(
+    item: schemas.ItemCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+
+FastAPI validates the body using ItemCreate, injects a database session, and
+runs get_current_user to authenticate the request.
+
+    new_item = models.Item(
+        title=item.title,
+        description=item.description,
+        owner_id=current_user.id
+    )
+
+Creates an item owned by the authenticated user. The client cannot choose an
+arbitrary owner_id.
+
+    db.add(new_item)
+    db.commit()
+
+Adds and saves the item.
+
+    db.refrsh(new_item)
+
+refrsh is misspelled. It must be db.refresh(new_item). As written, creation
+fails after the database commit.
+
+    return new_item
+
+Returns the SQLAlchemy object, which FastAPI serializes using ItemResponse.
+
+@router.get("/", response_model=list[schemas.ItemOut])
+
+Registers GET /items/ and declares a list of ItemOut objects as the response.
+
+
+def get_all_items(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+
+Requires authentication and injects the database session.
+
+    return db.query(models.Items).filter(
+        models.Item.owner_id == current_user.id
+    ).all()
+
+The intended behavior is to return only the authenticated user's items.
+However, models.Items is incorrect. The model is named models.Item.
+
+Correct form:
+
+    return db.query(models.Item).filter(
+        models.Item.owner_id == current_user.id
+    ).all()
+
+@router.get("/{item_id}", response_model=schemas.ItemOut)
+
+Registers GET /items/{item_id}.
+
+
+def get_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+
+The path value is converted to an integer, and authentication is required.
+
+    item = db.query(models.Items).filter(
+        models.Item.id == item_id,
+        models.Item.owner_id == current_user.id
+    ).first()
+
+Again, models.Items should be models.Item. The query checks both the item ID
+and ownership by the authenticated user.
+
+    if not item:
+
+Checks whether the item exists for the current user.
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Item not found"
+    )
+
+Returns 404 if the item is missing or belongs to another user. This avoids
+revealing another user's item.
+
+    return item
+
+Returns the item and lets FastAPI serialize it.
+
+@router.put("/{item_id}", response_model=schemas.ItemOut)
+
+Registers PUT /items/{item_id} for updates.
+
+
+def update_item(
+    item_id: int,
+    update_data: schemas.ItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+
+Accepts update data, opens a session, and requires authentication.
+
+    items = db.query(models.Item).filter(
+        models.Item.id == item_id,
+        models.Item.order_id == current_user.id
+    ).first()
+
+There are two bugs:
+- The variable should be named item, not items.
+- order_id should be owner_id.
+
+Correct form:
+
+    item = db.query(models.Item).filter(
+        models.Item.id == item_id,
+        models.Item.owner_id == current_user.id
+    ).first()
+
+    if not item:
+
+Checks whether the item exists and belongs to the current user. With the
+original code, item is undefined and causes a NameError.
+
+    for field, value in update_data.model_dump(
+        exclude_unset=True
+    ).items():
+
+Converts the update schema into a dictionary and includes only fields supplied
+by the client. This enables partial updates.
+
+    setattr(item, field, value)
+
+Dynamically changes the matching SQLAlchemy attribute.
+
+    db.commit()
+    db.refresh(item)
+
+Saves and reloads the updated object.
+
+    return item
+
+Returns the updated item.
+
+@router.delete("/{item_id}", status_code=204)
+
+Registers DELETE /items/{item_id}. HTTP 204 means success with no response
+body.
+
+
+def delete_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+
+Receives the item ID, database session, and authenticated user.
+
+    item = db.query(models.Item).filter(
+        models.Item.id == item_id,
+        models.Item.owner_id == current_user.id
+    ).first()
+
+Finds the item only if it belongs to the current user.
+
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Item not found"
+        )
+
+Returns 404 if the item does not exist or is owned by someone else.
+
+    db.delete(item)
+    db.commit()
+
+Deletes the object and permanently saves the deletion.
+
+
+============================================================
+8. requirements.txt
+============================================================
+
+fastapi
+
+The web framework.
+
+uvicorn[standard]
+
+The ASGI server used to run the FastAPI application.
+
+sqlalchemy
+
+The ORM used for database operations.
+
+pydandic[email]
+
+This contains a spelling mistake. It should be pydantic[email]. Pydantic
+validates request data, and the email extra enables EmailStr.
+
+python-jose[cryptography]
+
+Used to create and verify JWT tokens.
+
+passlib[bcypt]
+
+This contains a spelling mistake. It should be passlib[bcrypt]. Passlib
+provides password hashing utilities.
+
+python-multipart
+
+Required for OAuth2PasswordRequestForm and form-encoded login requests.
+
+bcrypt<4.1
+
+Pins bcrypt below version 4.1 for compatibility with the current Passlib
+setup.
+
+
+============================================================
+9. IMPORTANT CURRENT PROBLEMS
+============================================================
+
+The code compiles and the application can import, but some routes fail at
+runtime because of spelling and naming errors.
+
+1. HTTPExeption must be HTTPException.
+2. form must be form_data.
+3. ststus_code must be status_code.
+4. HS2660 should probably be HS256.
+5. Registration must return new_user.
+6. db.refrsh must be db.refresh.
+7. models.Items must be models.Item.
+8. order_id must be owner_id.
+9. The update variable should be item, not items.
+10. Optional descriptions conflict with nullable=False in the database model.
+11. owner_id should normally be a ForeignKey to users.id.
+12. SECRET_KEY should come from environment configuration.
+13. pydandic should be pydantic in requirements.txt.
+14. bcypt should be bcrypt in requirements.txt.
+
+
+============================================================
+10. INTERVIEW SUMMARY
+============================================================
+
+This application uses FastAPI for HTTP routing, Pydantic for request and
+response validation, SQLAlchemy for database access, bcrypt for password
+hashing, and JWT for stateless authentication.
+
+During registration, the password is hashed and stored. During login, the
+submitted password is checked against the stored hash. If it is valid, the
+application creates a signed JWT containing the username and returns it to the
+client.
+
+Protected item endpoints use get_current_user as a FastAPI dependency. That
+dependency extracts the bearer token, validates the JWT signature and expiry,
+loads the user from the database, and returns the authenticated user.
+
+The ownership condition is especially important:
+
+    models.Item.owner_id == current_user.id
+
+Authentication answers: "Who is this user?"
+
+Authorization answers: "Is this user allowed to access this item?"
+
+The ownership filter provides authorization by ensuring that users can only
+read, update, or delete their own records.
